@@ -1,11 +1,15 @@
 #include "mainwindow.h"
+#include <mpi.h>
 
 #include <QApplication>
 #include <QLocale>
 #include <QTranslator>
 
-int main(int argc, char *argv[])
-{
+
+int main(int argc, char *argv[]) {
+    // Инициализация MPI
+    MPI_Init(&argc, &argv);
+
     QApplication a(argc, argv);
 
     QTranslator translator;
@@ -17,7 +21,15 @@ int main(int argc, char *argv[])
             break;
         }
     }
+
     MainWindow w;
     w.show();
-    return a.exec();
+
+    int result = a.exec();
+
+    // Завершаем работу MPI
+    MPI_Finalize();
+
+    return result;
 }
+

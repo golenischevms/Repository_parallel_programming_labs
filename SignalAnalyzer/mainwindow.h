@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QVector>
+#include <complex>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -29,8 +30,21 @@ private slots:
 private:
     Ui::MainWindow *ui;
 
+    QVector <double> t, u;
+    QVector <double> f, a, f1, f2, a1, a2;
+
     void ui_settings();
     void setup_graph();
+
+
+
+public:
+    void sample_signal(double (MainWindow::*f)(double), int m, QVector<double> *x, QVector<double> *y);
+    double my_signal(double t); // Объявление функции-члена
+    void compute_fft(const QVector<double> &t, const QVector<double> &u, QVector<double> &frequencies, QVector<double> &amplitudes);
+
+
+
 
 };
 #endif // MAINWINDOW_H

@@ -9,6 +9,10 @@
 #include <QDebug>
 #include <QtMath>
 
+#include <math.h>
+#include <mpi.h>
+#include <omp.h>
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -17,6 +21,10 @@ MainWindow::MainWindow(QWidget *parent)
     // Настройка интерфейса
     ui_settings();
     setup_graph();
+
+
+    // Генерируем тестовую выборку
+    sample_signal(&MainWindow::my_signal, 256, &u, &t);
 
     // Сигналы и слоты
     connect(ui->oscilloscope, &QRadioButton::clicked, this, &MainWindow::setup_graph);
@@ -71,6 +79,96 @@ void MainWindow::setup_graph()
     ui->graph->replot();
 }
 
+
+
+/// Искусственный сигнал для проверки работоспособности алгоритма
+void MainWindow::sample_signal(double (MainWindow::*f)(double), int m, QVector<double> *x, QVector<double> *y) {
+    if (m <= 0 || x == nullptr || y == nullptr) {
+        return;
+    }
+
+    x->clear();
+    y->clear();
+
+    double dt = 1.0 / m;
+
+    for (int i = 0; i < m; ++i) {
+        double t = i * dt;
+        x->append(t);
+        y->append((this->*f)(t)); // Вызов метода через указатель на функцию-член
+    }
+}
+
+double MainWindow::my_signal(double t)
+{
+    return 3 * cos(2 * M_PI * 3 * t + M_PI / 4)   // Гармоника с частотой 3 Гц, амплитудой 3, сдвиг фазы π/4
+           + 2 * sin(2 * M_PI * 7 * t - M_PI / 6)  // Гармоника с частотой 7 Гц, амплитудой 2, сдвиг фазы -π/6
+           + 1.5 * cos(2 * M_PI * 12 * t)          // Гармоника с частотой 12 Гц, амплитудой 1.5, без фазового сдвига
+           + 0.8 * sin(2 * M_PI * 20 * t + M_PI / 3); // Гармоника с частотой 20 Гц, амплитудой 0.8, сдвиг фазы π/3
+}
+
+void MainWindow::compute_fft(const QVector<double> &t, const QVector<double> &u, QVector<double> &frequencies, QVector<double> &amplitudes)
+{
+    int rank, size;
+
+    // Инициализация MPI
+    MPI_Init(nullptr, nullptr); // MPI_Init должен быть вызван до работы с MPI
+
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    int N = t.size();
+    if (N != u.size() || N == 0) {
+        MPI_Finalize(); // Завершаем MPI в случае ошибки
+        return;
+    }
+
+    // Ваш существующий код
+    frequencies.clear();
+    amplitudes.clear();
+
+    int local_N = N / size;
+    int start = rank * local_N;
+    int end = (rank == size - 1) ? N : start + local_N;
+
+    QVector<std::complex<double>> local_fft(local_N);
+
+#pragma omp parallel for
+    for (int k = start; k < end; ++k) {
+        std::complex<double> sum(0.0, 0.0);
+        for (int n = 0; n < N; ++n) {
+            double angle = -2.0 * M_PI * k * n / N;
+            std::complex<double> term(std::cos(angle), std::sin(angle));
+            sum += std::complex<double>(u[n], 0.0) * term;
+        }
+        local_fft[k - start] = sum;
+    }
+
+    QVector<std::complex<double>> global_fft;
+    if (rank == 0) {
+        global_fft.resize(N);
+    }
+
+    MPI_Gather(local_fft.data(), local_N * sizeof(std::complex<double>), MPI_BYTE,
+               global_fft.data(), local_N * sizeof(std::complex<double>), MPI_BYTE,
+               0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        double dt = t[1] - t[0];
+        double freq_step = 1.0 / (N * dt);
+
+        for (int k = 0; k < N; ++k) {
+            frequencies.append(k * freq_step);
+            amplitudes.append(std::abs(global_fft[k]) / N);
+        }
+    }
+
+    MPI_Finalize(); // Завершаем работу MPI
+}
+///
+///
+///
+///
 void MainWindow::on_file_path_button_clicked()
 {
     QString filePath = QFileDialog::getOpenFileName(this, tr("Открыть CSV файл с данными"), "/home/", tr("CSV data (*.csv)"));
@@ -153,6 +251,7 @@ void MainWindow::on_file_path_button_clicked()
 void MainWindow::on_plot_graph_button_clicked()
 {
     ui->graph->clearGraphs();
+
     int rowCount = ui->data_table->rowCount();
     if (rowCount == 0)
         return;
@@ -166,22 +265,56 @@ void MainWindow::on_plot_graph_button_clicked()
         ch2.append(ui->data_table->item(row, 2)->text().toDouble());
     }
 
-    if (ui->channel_1->isChecked())
+    if (ui->oscilloscope->isChecked())
     {
-        ui->graph->addGraph();
-        ui->graph->graph(0)->setData(time, ch1);
-        ui->graph->graph(0)->setPen(QPen(QColor(Qt::cyan), 2));
-        ui->graph->graph(0)->setName("Канал 1");
+        if (ui->channel_1->isChecked())
+        {
+            ui->graph->addGraph();
+            ui->graph->graph(0)->setData(time, ch1);
+            ui->graph->graph(0)->setPen(QPen(QColor(Qt::cyan), 2));
+            ui->graph->graph(0)->setName("Канал 1");
+        }
+
+        if (ui->channel_2->isChecked())
+        {
+            int index = ui->channel_1->isChecked() ? 1 : 0;
+            ui->graph->addGraph();
+            ui->graph->graph(index)->setData(time, ch2);
+            ui->graph->graph(index)->setPen(QPen(QColor(Qt::yellow), 2));
+            ui->graph->graph(index)->setName("Канал 2");
+        }
+    }
+    if (ui->spectrum_analyzer->isChecked())
+    {
+        compute_fft(time,ch1,f,a);
+        if (ui->channel_1->isChecked())
+        {
+            ui->graph->addGraph();
+            ui->graph->graph(0)->setData(f, a);
+            ui->graph->graph(0)->setPen(QPen(QColor(Qt::cyan), 2));
+            ui->graph->graph(0)->setName("Канал 1");
+        }
+
+        if (ui->channel_2->isChecked())
+        {
+            int index = ui->channel_1->isChecked() ? 1 : 0;
+            ui->graph->addGraph();
+            ui->graph->graph(index)->setData(time, ch2);
+            ui->graph->graph(index)->setPen(QPen(QColor(Qt::yellow), 2));
+            ui->graph->graph(index)->setName("Канал 2");
+        }
     }
 
-    if (ui->channel_2->isChecked())
-    {
-        int index = ui->channel_1->isChecked() ? 1 : 0;
-        ui->graph->addGraph();
-        ui->graph->graph(index)->setData(time, ch2);
-        ui->graph->graph(index)->setPen(QPen(QColor(Qt::yellow), 2));
-        ui->graph->graph(index)->setName("Канал 2");
-    }
+    // compute_fft(t,u,f,a);
+
+    // ui->graph->addGraph();
+    // ui->graph->graph(0)->setData(t, u);
+    // ui->graph->graph(0)->setPen(QPen(QColor(Qt::cyan), 2));
+
+    // ui->graph->addGraph();
+    // ui->graph->graph(1)->setData(f, a);
+    // ui->graph->graph(1)->setPen(QPen(QColor(Qt::yellow), 2));
+
 
     ui->graph->rescaleAxes();
     ui->graph->replot();
