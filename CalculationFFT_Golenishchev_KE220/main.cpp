@@ -10,6 +10,8 @@
 #include <openacc.h>
 #include <omp.h>
 
+// Итоговое задание, Голенищев А. Б., КЭ-220
+
 using namespace std;
 
 vector<double> t, u, f, a;
