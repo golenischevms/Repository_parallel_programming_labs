@@ -110,47 +110,47 @@ void sample_signal(double (*func)(double), int m, vector<double> &x, vector<doub
 }
 
 // Вычисление БПФ с OpenACC + OpenMP
-void my_compute_fft(const vector<double> &u, vector<double> &frequencies, vector<double> &amplitudes) {
+void my_compute_fft(const vector<double> &u, vector<double> &frequencies, vector<double> &amplitudes, double time_step) {
     int N = u.size();
     vector<complex<double>> fft_result(N);
 
+// Основная обработка с использованием OpenACC и OpenMP
 #pragma acc data copyin(u[0:N]) copyout(fft_result[0:N])
-#pragma acc parallel loop
+#pragma omp parallel for
     for (int k = 0; k < N; ++k) {
         complex<double> sum(0.0, 0.0);
 
-// Параллельная обработка
-#pragma omp parallel
-        {
-            complex<double> local_sum(0.0, 0.0); // Локальная переменная для суммы
-
-// Каждый поток выполняет вычисления для определённой части данных
-#pragma omp for
-            for (int n = 0; n < N; ++n) {
-                double angle = -2.0 * M_PI * k * n / N;
-                local_sum += u[n] * complex<double>(cos(angle), sin(angle));
-            }
-
-// Суммируем локальные суммы в общую
-#pragma omp critical
-            sum += local_sum;
+// Параллельная обработка по элементам внутри OpenACC
+#pragma acc parallel loop reduction(+:sum)
+        for (int n = 0; n < N; ++n) {
+            double angle = -2.0 * M_PI * k * n / N;
+            sum += u[n] * complex<double>(cos(angle), sin(angle));
         }
+
         fft_result[k] = sum;
     }
 
-    // Рассчитываем частоты и амплитуды
-    double freq_step = 1.0 / (N * (1.0 / u.size()));
+    // Инициализация векторов частот и амплитуд
+    frequencies.resize(N);
+    amplitudes.resize(N);
+
+    // Расчет шага частоты
+    double freq_step = 1.0 / (N * time_step);
+
+    // Построение массивов частот и амплитуд
     for (int k = 0; k < N; ++k) {
-        frequencies.push_back(k * freq_step);
-        amplitudes.push_back(abs(fft_result[k]) / N);
+        frequencies[k] = k * freq_step;
+        amplitudes[k] = abs(fft_result[k]) / N;
     }
 }
 
+
 // БПФ без ускорителей (последовательный)
-void serial_compute_fft(const vector<double> &u, vector<double> &frequencies, vector<double> &amplitudes) {
+void serial_compute_fft(const vector<double> &u, vector<double> &frequencies, vector<double> &amplitudes, double delta_t) {
     int N = u.size();
     vector<complex<double>> fft_result(N);
 
+    // Выполнение БПФ
     for (int k = 0; k < N; ++k) {
         complex<double> sum(0.0, 0.0);
         for (int n = 0; n < N; ++n) {
@@ -160,38 +160,44 @@ void serial_compute_fft(const vector<double> &u, vector<double> &frequencies, ve
         fft_result[k] = sum;
     }
 
-    double freq_step = 1.0 / (N * (1.0 / u.size()));
+    // Расчет частоты и амплитуд
+    double freq_step = 1.0 / (N * delta_t); // Шаг частоты
     for (int k = 0; k < N; ++k) {
         frequencies.push_back(k * freq_step);
         amplitudes.push_back(abs(fft_result[k]) / N);
     }
 }
 
+
 // БПФ с использованием FFTW
-void fftw_compute_fft(const vector<double> &u, vector<double> &frequencies, vector<double> &amplitudes) {
+void fftw_compute_fft(const vector<double> &u, vector<double> &frequencies, vector<double> &amplitudes, double delta_t) {
     int N = u.size();
-    vector<complex<double>> fft_result(N);
     fftw_complex *in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * N);
     fftw_complex *out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * N);
     fftw_plan plan = fftw_plan_dft_1d(N, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
 
+    // Заполнение входного массива
     for (int i = 0; i < N; ++i) {
-        in[i][0] = u[i];
-        in[i][1] = 0.0;
+        in[i][0] = u[i]; // Реальная часть
+        in[i][1] = 0.0;  // Мнимая часть
     }
 
+    // Выполнение FFT
     fftw_execute(plan);
 
-    double freq_step = 1.0 / (N * (1.0 / u.size()));
+    // Расчет частоты и амплитуд
+    double freq_step = 1.0 / (N * delta_t); // Шаг частоты
     for (int k = 0; k < N; ++k) {
-        frequencies.push_back(k * freq_step);
-        amplitudes.push_back(sqrt(out[k][0] * out[k][0] + out[k][1] * out[k][1]) / N);
+        frequencies.push_back(k * freq_step); // Частота
+        amplitudes.push_back(sqrt(out[k][0] * out[k][0] + out[k][1] * out[k][1]) / N); // Амплитуда
     }
 
+    // Освобождение ресурсов
     fftw_destroy_plan(plan);
     fftw_free(in);
     fftw_free(out);
 }
+
 
 
 int main() {
@@ -205,6 +211,8 @@ int main() {
     read_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/input_data/dark.csv", t, u, 500000);
     cout << "Данные загрузил" << endl;
 
+    double time_step = 4e-10;
+
     vector<double> f_serial, a_serial;
     vector<double> f_my, a_my;
     vector<double> f_fftw, a_fftw;
@@ -213,21 +221,21 @@ int main() {
 
     cout << "Вычисляю последовательно БПФ" << endl;
     auto start = chrono::high_resolution_clock::now();
-    serial_compute_fft(u, f_serial, a_serial);
+    serial_compute_fft(u, f_serial, a_serial, time_step);
     auto end = chrono::high_resolution_clock::now();
     cout << "Время serial_compute_fft: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
     write_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/output_data/serial_results.csv", t, u, f_serial, a_serial);
 
     cout << "Вычисляю БПФ с помощью OpenMP и OpenACC" << endl;
     start = chrono::high_resolution_clock::now();
-    my_compute_fft(u, f_my, a_my);
+    my_compute_fft(u, f_my, a_my, time_step);
     end = chrono::high_resolution_clock::now();
     cout << "Время my_compute_fft: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
     write_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/output_data/my_results.csv", t, u, f_my, a_my);
 
     cout << "Вычисляю БПФ с помощью средств библиотеки FFTW" << endl;
     start = chrono::high_resolution_clock::now();
-    fftw_compute_fft(u, f_fftw, a_fftw);
+    fftw_compute_fft(u, f_fftw, a_fftw, time_step);
     end = chrono::high_resolution_clock::now();
     cout << "Время fftw_compute_fft: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
     write_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/output_data/fftw_results.csv", t, u, f_fftw, a_fftw);
