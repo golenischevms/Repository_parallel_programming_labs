@@ -9,8 +9,7 @@ __global__ void vectorAddGPU(const float *a, const float *b, float *c, size_t N)
     }
 }
 
-int main() {
-    size_t N = 1 << 20; // Размер вектора (например, 1 миллион элементов)
+void measurePerformance(size_t N) {
     size_t bytes = N * sizeof(float);
 
     // Выделение памяти на хосте
@@ -20,8 +19,8 @@ int main() {
 
     // Инициализация данных
     for (size_t i = 0; i < N; ++i) {
-        h_a[i] = 1.0f;  // Первый вектор
-        h_b[i] = 2.0f;  // Второй вектор
+        h_a[i] = 1.0f;
+        h_b[i] = 2.0f;
     }
 
     // Выделение памяти на устройстве
@@ -35,7 +34,7 @@ int main() {
     cudaMemcpy(d_b, h_b, bytes, cudaMemcpyHostToDevice);
 
     // Настройка сетки и блоков
-    int threads = 256;                       // Количество нитей в блоке
+    int threads = 256;  // Количество потоков в блоке
     int blocks = (N + threads - 1) / threads; // Количество блоков
 
     // Измерение времени выполнения на GPU
@@ -57,8 +56,11 @@ int main() {
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
 
+    // Вывод параметров
     printf("Размер вектора: %zu\n", N);
-    printf("Время выполнения на GPU: %f ms\n", milliseconds);
+    printf("Количество блоков: %d\n", blocks);
+    printf("Количество потоков в блоке: %d\n", threads);
+    printf("Время выполнения на GPU: %f ms\n\n", milliseconds);
 
     // Освобождение памяти
     free(h_a);
@@ -67,6 +69,16 @@ int main() {
     cudaFree(d_a);
     cudaFree(d_b);
     cudaFree(d_c);
+}
+
+int main() {
+    // Тестирование для различных размеров векторов
+    size_t sizes[] = {1 << 10, 1 << 15, 1 << 20, 1 << 25};
+    int numSizes = sizeof(sizes) / sizeof(sizes[0]);
+
+    for (int i = 0; i < numSizes; ++i) {
+        measurePerformance(sizes[i]);
+    }
 
     return 0;
 }
