@@ -10,11 +10,14 @@
 #include <openacc.h>
 #include <omp.h>
 
-// Итоговое задание, Голенищев А. Б., КЭ-220
-
 using namespace std;
 
 vector<double> t, u, f, a;
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+/// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ //////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////
 
 // Функция для чтения данных из CSV-файла
 bool read_csv(const string &filename, vector<double> &x, vector<double> &y, int max_lines = -1) {
@@ -111,18 +114,26 @@ void sample_signal(double (*func)(double), int m, vector<double> &x, vector<doub
     }
 }
 
+
+//////////////////////////////////////////////////////////////////////////////////////
+/// РЕАЛИЗАЦИЯ ///////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////
+
+
 // Вычисление БПФ с OpenACC + OpenMP
-void my_compute_fft(const vector<double> &u, vector<double> &frequencies, vector<double> &amplitudes, double time_step) {
+void my_compute_fft(const vector<double> &u, vector<double> &frequencies, vector<double> &amplitudes, double time_step, int threads_omp, int gangs_acc) {
     int N = u.size();
     vector<complex<double>> fft_result(N);
 
 // Основная обработка с использованием OpenACC и OpenMP
 #pragma acc data copyin(u[0:N]) copyout(fft_result[0:N])
+omp_set_num_threads(threads_omp);
 #pragma omp parallel for
     for (int k = 0; k < N; ++k) {
         complex<double> sum(0.0, 0.0);
 
 // Параллельная обработка по элементам внутри OpenACC
+#pragma acc parallel loop num_gangs(gangs_acc) num_workers(32) vector_length(32)
 #pragma acc parallel loop reduction(+:sum)
         for (int n = 0; n < N; ++n) {
             double angle = -2.0 * M_PI * k * n / N;
@@ -201,6 +212,115 @@ void fftw_compute_fft(const vector<double> &u, vector<double> &frequencies, vect
 }
 
 
+//////////////////////////////////////////////////////////////////////////////////////
+/// ТЕСТИРОВАНИЕ /////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////
+
+// Тест 1: Увеличиваем количество потоков для OpenACC + OpenMP и FFTW, фиксированное количество выборки
+void test_openacc_omp_fftw_fixed_threads(const vector<double>& u, double time_step) {
+    cout << "Тест 1: Увеличение числа потоков для OpenACC + OpenMP и FFTW с фиксированным размером выборки" << endl;
+
+    // Массивы для хранения результатов
+    vector<double> f_my, a_my, f_fftw, a_fftw;
+
+    // Увеличиваем количество потоков (10, 50, 100, 500, 1000)
+    for (int threads = 10; threads <= 1000; threads += 50) {
+        // Вычисляем БПФ с OpenMP + OpenACC
+        auto start = chrono::high_resolution_clock::now();
+        my_compute_fft(u, f_my, a_my, time_step, threads, threads);
+        auto end = chrono::high_resolution_clock::now();
+        cout << "OpenACC + OpenMP, потоки: " << threads << ", время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+
+        // Вычисляем БПФ с использованием FFTW
+        start = chrono::high_resolution_clock::now();
+        fftw_compute_fft(u, f_fftw, a_fftw, time_step);
+        end = chrono::high_resolution_clock::now();
+        cout << "FFTW, потоки: " << threads << ", время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+    }
+}
+
+// Тест 2: Увеличиваем количество потоков для OpenACC (фиксированное количество потоков для OpenMP), FFTW
+void test_openacc_omp_increase_openacc_threads(const vector<double>& u, double time_step) {
+    cout << "Тест 2: Увеличение числа потоков для OpenACC, фиксированное количество потоков для OpenMP и FFTW" << endl;
+
+    // Массивы для хранения результатов
+    vector<double> f_my, a_my, f_fftw, a_fftw;
+
+
+    // Увеличиваем количество потоков только для OpenACC (10, 50, 100, 500, 1000)
+    for (int acc_gangs = 10; acc_gangs <= 1000; acc_gangs += 50) {
+        // Вычисляем БПФ с OpenMP + OpenACC
+        auto start = chrono::high_resolution_clock::now();
+        my_compute_fft(u, f_my, a_my, time_step, 10, acc_gangs);
+        auto end = chrono::high_resolution_clock::now();
+        cout << "Увеличение gsngs OpenACC, gangs: " << acc_gangs << ", время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+
+        // Вычисляем БПФ с использованием FFTW
+        start = chrono::high_resolution_clock::now();
+        fftw_compute_fft(u, f_fftw, a_fftw, time_step);
+        end = chrono::high_resolution_clock::now();
+        cout << "FFTW, время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+    }
+}
+
+// Тест 3: Увеличиваем количество потоков для OpenMP, фиксированное количество gangs OpenACC, FFTW
+void test_openacc_omp_increase_omp_threads(const vector<double>& u, double time_step) {
+    cout << "Тест 3: Увеличение числа потоков для OpenMP, фиксированное количество потоков для OpenACC и FFTW" << endl;
+
+    // Массивы для хранения результатов
+    vector<double> f_my, a_my, f_fftw, a_fftw;
+
+    // Увеличиваем количество потоков только для OpenMP
+    for (int omp_threads = 10; omp_threads <= 1000; omp_threads += 50) {
+        // Вычисляем БПФ с OpenMP + OpenACC
+        auto start = chrono::high_resolution_clock::now();
+        my_compute_fft(u, f_my, a_my, time_step, omp_threads, 10);
+        auto end = chrono::high_resolution_clock::now();
+        cout << "Увеличение числа потоков OpenMP, потоки: " << omp_threads << ", время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+
+        // Вычисляем БПФ с использованием FFTW
+        start = chrono::high_resolution_clock::now();
+        fftw_compute_fft(u, f_fftw, a_fftw, time_step);
+        end = chrono::high_resolution_clock::now();
+        cout << "FFTW, время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+    }
+}
+
+// Тест 4: Увеличиваем размер выборки (500, 1000, 5000, 10000, 50000, 100000) с фиксированными потоками
+void test_increase_sample_size(const vector<double>& u, double time_step) {
+    cout << "Тест 4: Увеличение размера выборки с фиксированным количеством потоков для OpenACC + OpenMP и FFTW" << endl;
+
+    // Массивы для хранения результатов
+    vector<double> f_my, a_my, f_fftw, a_fftw;
+
+    // Увеличиваем размер выборки
+    vector<int> sample_sizes = {500, 1000, 5000, 10000, 50000, 100000};
+    for (int size : sample_sizes) {
+        vector<double> u_sample(u.begin(), u.begin() + size);  // Выбираем подмножество данных
+
+        // Вычисляем БПФ с ЦПУ
+        auto start = chrono::high_resolution_clock::now();
+        serial_compute_fft(u_sample, f_my, a_my, time_step);
+        auto end = chrono::high_resolution_clock::now();
+        cout << "Размер выборки: " << size << ", ЦПУ, время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+
+        // Вычисляем БПФ с OpenACC + OpenMP
+        start = chrono::high_resolution_clock::now();
+        my_compute_fft(u_sample, f_my, a_my, time_step, 10, 10);
+        end = chrono::high_resolution_clock::now();
+        cout << "Размер выборки: " << size << ", OpenACC + OpenMP, время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+
+        // Вычисляем БПФ с использованием FFTW
+        start = chrono::high_resolution_clock::now();
+        fftw_compute_fft(u_sample, f_fftw, a_fftw, time_step);
+        end = chrono::high_resolution_clock::now();
+        cout << "Размер выборки: " << size << ", FFTW, время: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+/// ОСНОВНОЙ КОД /////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////
 
 int main() {
     // Тестирование на синтетических данных
@@ -210,37 +330,19 @@ int main() {
 
     // Тестирование на данных из файла
     cout << "Загружаю данные из файла" << endl;
-    read_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/input_data/dark.csv", t, u, 500000);
-    cout << "Данные загрузил" << endl;
+    read_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/input_data/dark.csv", t, u, 10000);  // Используем 10 000 значений
+    cout << "Данные загружены" << endl;
 
-    double time_step = 4e-10;
-
-    vector<double> f_serial, a_serial;
-    vector<double> f_my, a_my;
-    vector<double> f_fftw, a_fftw;
-
-    cout << "Размер вектора данных (количество значений напряжения и времени): " << u.size() << endl;
-
-    cout << "Вычисляю последовательно БПФ" << endl;
-    auto start = chrono::high_resolution_clock::now();
-    serial_compute_fft(u, f_serial, a_serial, time_step);
-    auto end = chrono::high_resolution_clock::now();
-    cout << "Время serial_compute_fft: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
-    write_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/output_data/serial_results.csv", t, u, f_serial, a_serial);
-
-    cout << "Вычисляю БПФ с помощью OpenMP и OpenACC" << endl;
-    start = chrono::high_resolution_clock::now();
-    my_compute_fft(u, f_my, a_my, time_step);
-    end = chrono::high_resolution_clock::now();
-    cout << "Время my_compute_fft: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
-    write_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/output_data/my_results.csv", t, u, f_my, a_my);
-
-    cout << "Вычисляю БПФ с помощью средств библиотеки FFTW" << endl;
-    start = chrono::high_resolution_clock::now();
-    fftw_compute_fft(u, f_fftw, a_fftw, time_step);
-    end = chrono::high_resolution_clock::now();
-    cout << "Время fftw_compute_fft: " << chrono::duration_cast<chrono::microseconds>(end - start).count() << " мкс" << endl;
-    write_csv("/home/golenischevms/CalculationFFT_Golenishchev_KE220/output_data/fftw_results.csv", t, u, f_fftw, a_fftw);
+    double time_step = 4e-10;  // Шаг времени
+    //
+    cout << "---------------------------------------------------" << endl;
+    cout << "Тестриуется собственная реализация ДПФ и БПФ в FFTW" << endl;
+    cout << "---------------------------------------------------" << endl;
+    // Проведение тестов
+    test_openacc_omp_fftw_fixed_threads(u, time_step);
+    test_openacc_omp_increase_openacc_threads(u, time_step);
+    test_openacc_omp_increase_omp_threads(u, time_step);
+    test_increase_sample_size(u, time_step);
 
     cout << "Готово." << endl;
     return 0;
